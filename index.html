@@ -236,17 +236,17 @@
 <!-- VIDEO MAKER -->
 <div class="section">
     <div class="video-maker">
-        <h2>🎬 Automatic Short Video Maker</h2>
-        <p>Upload pictures and create a short slideshow video automatically in your browser.</p>
+        <h2>🎬 Automatic Audio Visual Video Maker</h2>
+        <p>Upload an audio file and instantly generate a shareable video with animated visuals.</p>
 
         <div class="video-controls">
             <div class="field">
-                <label for="photoInput">Choose pictures</label>
-                <input id="photoInput" type="file" accept="image/*" multiple>
+                <label for="audioInput">Choose audio</label>
+                <input id="audioInput" type="file" accept="audio/*">
             </div>
             <div class="field">
-                <label for="secondsPerImage">Seconds per picture</label>
-                <input id="secondsPerImage" type="number" min="1" max="10" value="2">
+                <label for="coverInput">Optional cover image</label>
+                <input id="coverInput" type="file" accept="image/*">
             </div>
             <div class="field">
                 <label for="videoFps">Frames per second</label>
@@ -254,10 +254,10 @@
             </div>
         </div>
 
-        <p class="hint">The generated file uses the WebM format and downloads automatically when finished.</p>
+        <p class="hint">The generated file uses WebM format with your original audio. If no cover is provided, we auto-create a dynamic gradient scene.</p>
 
         <div class="video-actions">
-            <button id="createVideoBtn" class="btn">Create Short Video</button>
+            <button id="createVideoBtn" class="btn">Create Audio Video</button>
             <a id="downloadVideoLink" class="btn" style="display:none; text-decoration:none;" download="short-video.webm">Download Video</a>
         </div>
         <div id="videoStatus"></div>
@@ -308,13 +308,11 @@
 
 <script>
 const createVideoBtn = document.getElementById('createVideoBtn');
-const photoInput = document.getElementById('photoInput');
-const secondsPerImageInput = document.getElementById('secondsPerImage');
+const audioInput = document.getElementById('audioInput');
+const coverInput = document.getElementById('coverInput');
 const videoFpsInput = document.getElementById('videoFps');
 const videoStatus = document.getElementById('videoStatus');
 const downloadVideoLink = document.getElementById('downloadVideoLink');
-
-const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function loadImageFromFile(file) {
     return new Promise((resolve, reject) => {
@@ -332,33 +330,124 @@ function loadImageFromFile(file) {
     });
 }
 
-async function createVideoFromImages() {
-    const files = Array.from(photoInput.files || []);
-    if (!files.length) {
-        videoStatus.textContent = 'Please choose at least one picture first.';
+function loadAudioElement(file) {
+    return new Promise((resolve, reject) => {
+        const audio = document.createElement('audio');
+        const url = URL.createObjectURL(file);
+        audio.preload = 'metadata';
+        audio.onloadedmetadata = () => {
+            resolve({ audio, url });
+        };
+        audio.onerror = () => {
+            URL.revokeObjectURL(url);
+            reject(new Error(`Could not load audio: ${file.name}`));
+        };
+        audio.src = url;
+    });
+}
+
+function drawFrame({
+    context,
+    canvas,
+    analyser,
+    dataArray,
+    coverImage,
+    trackTitle,
+    elapsed,
+    duration
+}) {
+    const width = canvas.width;
+    const height = canvas.height;
+    const gradient = context.createLinearGradient(0, 0, width, height);
+    const pulse = 0.3 + (Math.sin(elapsed * 2.2) + 1) * 0.2;
+    gradient.addColorStop(0, `rgba(14, 116, 144, ${0.7 + pulse})`);
+    gradient.addColorStop(0.5, 'rgba(15, 23, 42, 0.95)');
+    gradient.addColorStop(1, 'rgba(30, 64, 175, 0.85)');
+    context.fillStyle = gradient;
+    context.fillRect(0, 0, width, height);
+
+    if (coverImage) {
+        const box = Math.min(width, height) * 0.45;
+        const x = width / 2 - box / 2;
+        const y = height * 0.12;
+        context.save();
+        context.shadowColor = '#0ea5e9';
+        context.shadowBlur = 24;
+        context.drawImage(coverImage, x, y, box, box);
+        context.restore();
+    }
+
+    analyser.getByteFrequencyData(dataArray);
+    const bars = 64;
+    const barGap = 5;
+    const totalGap = barGap * (bars - 1);
+    const barWidth = (width * 0.84 - totalGap) / bars;
+    const startX = width * 0.08;
+    const baseline = height * 0.82;
+    const maxHeight = height * 0.33;
+
+    for (let i = 0; i < bars; i += 1) {
+        const value = dataArray[Math.floor(i * (dataArray.length / bars))] / 255;
+        const barHeight = Math.max(4, value * maxHeight);
+        const x = startX + i * (barWidth + barGap);
+        const y = baseline - barHeight;
+        context.fillStyle = `hsl(${190 + i * 1.5}, 88%, ${50 + value * 15}%)`;
+        context.fillRect(x, y, barWidth, barHeight);
+    }
+
+    context.fillStyle = '#e2e8f0';
+    context.font = 'bold 34px Arial, sans-serif';
+    context.textAlign = 'center';
+    context.fillText(trackTitle, width / 2, height * 0.68);
+
+    const progress = duration ? Math.min(1, elapsed / duration) : 0;
+    context.fillStyle = 'rgba(148, 163, 184, 0.35)';
+    context.fillRect(width * 0.18, height * 0.9, width * 0.64, 12);
+    context.fillStyle = '#38bdf8';
+    context.fillRect(width * 0.18, height * 0.9, width * 0.64 * progress, 12);
+}
+
+async function createAudioVisualVideo() {
+    const audioFile = audioInput.files?.[0];
+    if (!audioFile) {
+        videoStatus.textContent = 'Please upload an audio file first.';
         return;
     }
 
-    const secondsPerImage = Number(secondsPerImageInput.value) || 2;
     const fps = Number(videoFpsInput.value) || 24;
+    const trackTitle = audioFile.name.replace(/\.[^/.]+$/, '').slice(0, 40) || 'Untitled Track';
 
     createVideoBtn.disabled = true;
     downloadVideoLink.style.display = 'none';
-    videoStatus.textContent = 'Loading pictures...';
+    videoStatus.textContent = 'Preparing audio visualizer...';
 
     try {
-        const images = await Promise.all(files.map(loadImageFromFile));
-
+        const coverImage = coverInput.files?.[0] ? await loadImageFromFile(coverInput.files[0]) : null;
+        const { audio, url: audioUrl } = await loadAudioElement(audioFile);
+        const duration = Number(audio.duration) || 0;
         const canvas = document.createElement('canvas');
+        canvas.width = 1280;
+        canvas.height = 720;
         const context = canvas.getContext('2d');
-        const maxWidth = Math.max(...images.map((img) => img.width));
-        const maxHeight = Math.max(...images.map((img) => img.height));
-        canvas.width = maxWidth;
-        canvas.height = maxHeight;
+        if (!context) {
+            throw new Error('Canvas rendering is not available in this browser.');
+        }
 
         const stream = canvas.captureStream(fps);
-        const recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9' });
+        const audioContext = new AudioContext();
+        const destination = audioContext.createMediaStreamDestination();
+        const sourceNode = audioContext.createMediaElementSource(audio);
+        const analyser = audioContext.createAnalyser();
+        analyser.fftSize = 2048;
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+        sourceNode.connect(analyser);
+        analyser.connect(destination);
+        analyser.connect(audioContext.destination);
+
+        destination.stream.getAudioTracks().forEach((track) => stream.addTrack(track));
+        const recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9,opus' });
         const chunks = [];
+        let animationFrameId;
 
         recorder.ondataavailable = (event) => {
             if (event.data && event.data.size > 0) {
@@ -370,25 +459,37 @@ async function createVideoFromImages() {
             recorder.onstop = resolve;
         });
 
+        let startTime = 0;
+        const render = (timestamp) => {
+            if (!startTime) {
+                startTime = timestamp;
+            }
+            const elapsed = (timestamp - startTime) / 1000;
+            drawFrame({
+                context,
+                canvas,
+                analyser,
+                dataArray,
+                coverImage,
+                trackTitle,
+                elapsed,
+                duration
+            });
+            animationFrameId = requestAnimationFrame(render);
+        };
+
         recorder.start();
-        videoStatus.textContent = 'Rendering short video...';
+        requestAnimationFrame(render);
+        videoStatus.textContent = 'Rendering audio video...';
 
-        for (let i = 0; i < images.length; i += 1) {
-            const image = images[i];
-            context.fillStyle = '#000';
-            context.fillRect(0, 0, canvas.width, canvas.height);
+        await audio.play();
+        await new Promise((resolve) => {
+            audio.onended = resolve;
+        });
 
-            const ratio = Math.min(canvas.width / image.width, canvas.height / image.height);
-            const drawWidth = image.width * ratio;
-            const drawHeight = image.height * ratio;
-            const x = (canvas.width - drawWidth) / 2;
-            const y = (canvas.height - drawHeight) / 2;
-
-            context.drawImage(image, x, y, drawWidth, drawHeight);
-            videoStatus.textContent = `Rendering slide ${i + 1} of ${images.length}...`;
-            await wait(secondsPerImage * 1000);
+        if (animationFrameId) {
+            cancelAnimationFrame(animationFrameId);
         }
-
         recorder.stop();
         await stopPromise;
 
@@ -398,7 +499,13 @@ async function createVideoFromImages() {
         downloadVideoLink.style.display = 'inline-block';
         downloadVideoLink.click();
 
-        videoStatus.textContent = 'Done! Your short video was generated and downloaded.';
+        URL.revokeObjectURL(audioUrl);
+        sourceNode.disconnect();
+        analyser.disconnect();
+        destination.disconnect();
+        await audioContext.close();
+
+        videoStatus.textContent = 'Done! Your audio visual video was generated and downloaded.';
     } catch (error) {
         videoStatus.textContent = `Video creation failed: ${error.message}`;
     } finally {
@@ -406,9 +513,8 @@ async function createVideoFromImages() {
     }
 }
 
-createVideoBtn.addEventListener('click', createVideoFromImages);
+createVideoBtn.addEventListener('click', createAudioVisualVideo);
 </script>
 
 </body>
 </html>
-
